@@ -1,0 +1,16 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Runtime / local files
+*.log
+.env
+router_data.db
+
+# IDE
+.vscode/

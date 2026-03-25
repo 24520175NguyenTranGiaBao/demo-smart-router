@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Router - Bảng điều khiển</title>
+    
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        body { background-color: #f4f6f9; }
+        .navbar { box-shadow: 0 2px 4px rgba(0,0,0,.1); }
+        .device-table th { background-color: #2c3e50; color: white; }
+        .mac-font { font-family: monospace; font-size: 1.1em; color: #e74c3c; }
+    </style>
+</head>
+<body>
+
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-network-wired me-2"></i>Smart Router SDN
+            </a>
+            <button class="btn btn-outline-info btn-sm" onclick="loadDevices()">
+                <i class="fas fa-sync-alt me-1"></i> Làm mới dữ liệu
+            </button>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="row mb-3">
+            <div class="col">
+                <h4 class="mb-0 text-secondary"><i class="fas fa-users me-2"></i>Thiết bị đang kết nối</h4>
+            </div>
+        </div>
+
+        <div class="card shadow-sm border-0">
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover table-striped mb-0 device-table">
+                        <thead>
+                            <tr>
+                                <th>Tên thiết bị</th>
+                                <th>IP Address</th>
+                                <th>MAC Address</th>
+                                <th>Trạng thái</th>
+                                <th>Lần cuối hoạt động</th>
+                                <th class="text-center">Hành động</th>
+                            </tr>
+                        </thead>
+                        <tbody id="device-list">
+                            <tr>
+                                <td colspan="6" class="text-center py-4">
+                                    <div class="spinner-border text-primary" role="status">
+                                        <span class="visually-hidden">Đang tải...</span>
+                                    </div>
+                                    <p class="mt-2 text-muted">Đang quét mạng LAN...</p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    
+<script>
+        // Hàm này tự động chạy ngay khi vừa mở web lên
+        document.addEventListener("DOMContentLoaded", loadDevices);
+        function loadDevices() {
+            const tbody = document.getElementById("device-list");
+            // Hiển thị vòng xoay loading
+            tbody.innerHTML = `<tr><td colspan="6" class="text-center py-4"><div class="spinner-border text-primary" role="status"></div><p class="mt-2 text-muted">Đang làm mới dữ liệu...</p></td></tr>`;
+
+            // Gọi API lấy dữ liệu
+            fetch('/api/devices')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        renderTable(data.data);
+                    } else {
+                        tbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger">Lỗi từ máy chủ: ${data.message}</td></tr>`;
+                    }
+                })
+                .catch(error => {
+                    tbody.innerHTML = `<tr><td colspan="6" class="text-center text-danger">Mất kết nối đến Tổng đài API!</td></tr>`;
+                    console.error('Lỗi:', error);
+                });
+        }
+
+        function renderTable(devices) {
+            const tbody = document.getElementById("device-list");
+            tbody.innerHTML = ""; // Xóa vòng xoay
+
+            if (devices.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" class="text-center py-4 text-muted">Không tìm thấy thiết bị nào trong mạng.</td></tr>`;
+                return;
+            }
+
+            // Duyệt qua từng thiết bị và vẽ ra HTML
+            devices.forEach(device => {
+                const isBlocked = device.IsBlocked === 1;
+                
+                // Đổi màu badge trạng thái
+                // --- LOGIC TRẠNG THÁI CHUẨN ---
+                let statusBadge = '';
+                if (isBlocked) {
+                    statusBadge = `<span class="badge bg-danger"><i class="fas fa-lock me-1"></i>Đang bị chặn</span>`;
+                } else if (device.IsOnline) {
+                    statusBadge = `<span class="badge bg-success"><i class="fas fa-globe me-1"></i>Online</span>`;
+                } else {
+                    statusBadge = `<span class="badge bg-secondary"><i class="fas fa-moon me-1"></i>Offline</span>`;
+                }
+                
+                // Đổi màu và chức năng nút bấm
+                const actionButton = isBlocked
+                    ? `<button class="btn btn-sm btn-outline-success" onclick="toggleBlock('${device.MacAddress}', 'unblock')"><i class="fas fa-unlock me-1"></i> Mở khóa</button>`
+                    : `<button class="btn btn-sm btn-outline-danger" onclick="toggleBlock('${device.MacAddress}', 'block')"><i class="fas fa-ban me-1"></i> Chặn MAC</button>`;
+
+                // Hiển thị tên: Ưu tiên CustomName, nếu không có thì dùng OriginalName
+                const displayName = device.CustomName || device.OriginalName || "Không rõ tên";
+
+                const row = `
+                    <tr>
+                        <td class="fw-bold align-middle">${displayName}</td>
+                        <td class="align-middle">${device.IpAddress}</td>
+                        <td class="mac-font align-middle">${device.MacAddress}</td>
+                        <td class="align-middle">${statusBadge}</td>
+                        <td class="align-middle text-muted">${device.LastSeen}</td>
+                        <td class="text-center align-middle">${actionButton}</td>
+                    </tr>
+                `;
+                tbody.innerHTML += row;
+            });
+        }
+
+        function toggleBlock(mac, action) {
+            // Xác định gọi API nào
+            const endpoint = action === 'block' ? '/api/block' : '/api/unblock';
+            
+            // Gọi API với method POST và gửi kèm MAC Address
+            fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mac: mac })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    // Chặn/Thả thành công -> Gọi hàm load lại bảng để thấy sự thay đổi
+                    loadDevices();
+                } else {
+                    alert('Lỗi: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Lỗi:', error);
+                alert('Không thể kết nối tới máy chủ đâm lệnh Iptables!');
+            });
+        }
+    </script>
+</body>
+</html>
