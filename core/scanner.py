@@ -5,30 +5,27 @@ from core import database
 LEASE_FILE = "/var/lib/misc/dnsmasq.leases"
 
 def get_active_macs_from_arp():
-    """Dùng công cụ ip neigh để bắt chính xác trạng thái REACHABLE"""
+    """Use ip neigh to identify MAC addresses currently reachable on the network."""
     active_macs = set()
     try:
-        # Gọi lệnh Linux 'ip neigh' và lấy kết quả trả về
         result = subprocess.check_output(['ip', 'neigh'], text=True)
         
-        # Phân tích từng dòng kết quả
         for line in result.split('\n'):
             parts = line.split()
-            # Một dòng chuẩn sẽ có dạng: 192.168.10.68 dev wlan0 lladdr c0:a5... REACHABLE
+            # Typical line format: 192.168.10.68 dev wlan0 lladdr c0:a5... REACHABLE
             if len(parts) >= 5 and 'lladdr' in line:
                 mac = parts[4].lower()
-                state = parts[-1] # Lấy từ khóa cuối cùng (REACHABLE, STALE, FAILED...)
+                state = parts[-1]
                 
-                # CHỈ CẬP NHẬT LastSeen NẾU THIẾT BỊ ĐANG THỰC SỰ SỐNG (REACHABLE hoặc DELAY)
                 if state in ['REACHABLE', 'DELAY']:
                     active_macs.add(mac)
     except Exception as e:
-        print("[-] Lỗi khi quét ARP:", e)
+        print("Error while scanning ARP:", e)
         
     return active_macs
 
 def scan_and_update_devices():
-    """Cập nhật DB với logic mới: Chỉ update LastSeen nếu thực sự có mặt"""
+    """Update DB state and refresh LastSeen only for currently reachable devices."""
     active_macs = get_active_macs_from_arp()
     
     try:
@@ -40,12 +37,10 @@ def scan_and_update_devices():
                     mac = parts[1].lower()
                     ip = parts[2]
                     hostname = parts[3]
-                    
-                    # Truyền thêm trạng thái online vào hàm update
                     is_online = mac in active_macs
                     update_device_in_db(mac, ip, hostname, is_online)
     except FileNotFoundError:
-        print("[-] Chưa tìm thấy file leases.")
+        print("Leases file not found yet.")
         
     return get_all_devices_from_db()
 
@@ -57,13 +52,12 @@ def update_device_in_db(mac, ip, hostname, is_online):
     device = cursor.fetchone()
     
     if device is None:
-        # Máy mới hoàn toàn
         cursor.execute('''
             INSERT INTO Devices (MacAddress, IpAddress, OriginalName, CustomName, IsBlocked)
             VALUES (?, ?, ?, ?, 0)
         ''', (mac, ip, hostname, hostname))
     else:
-        # Nếu thiết bị ĐANG ONLINE (nằm trong ARP), thì mới cập nhật LastSeen
+        # Update LastSeen only when device is currently online (present in ARP table).
         if is_online:
             cursor.execute('''
                 UPDATE Devices 
@@ -71,7 +65,7 @@ def update_device_in_db(mac, ip, hostname, is_online):
                 WHERE MacAddress = ?
             ''', (ip, hostname, mac))
         else:
-            # Nếu thiết bị KHÔNG ONLINE, chỉ cập nhật lại IP/Tên lỡ có đổi, GIỮ NGUYÊN LastSeen cũ
+            # Keep LastSeen unchanged for offline devices; only update mutable fields.
             cursor.execute('''
                 UPDATE Devices 
                 SET IpAddress = ?, OriginalName = ?
@@ -88,11 +82,10 @@ def get_all_devices_from_db():
     devices = [dict(row) for row in cursor.fetchall()]
     conn.close()
 
-    # --- PHẦN NÂNG CẤP ---
-    # Quét lại mạng lần nữa để biết chính xác ai đang online ngay lúc này
+    # Re-scan network to provide the most up-to-date online state.
     active_macs = get_active_macs_from_arp()
     
-    # Bơm thêm cờ IsOnline vào từng thiết bị trước khi gửi lên Web
+    # Inject IsOnline flag before returning devices to the web layer.
     for device in devices:
         device['IsOnline'] = device['MacAddress'] in active_macs
         

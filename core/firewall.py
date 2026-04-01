@@ -41,20 +41,19 @@ def _update_block_status(mac_address, is_blocked):
     conn.close()
 
 def block_mac(mac_address):
-    """Đẩy luật chặn xuống Iptables và ghi vào Database"""
     mac_address = str(mac_address).strip().lower()
     if not is_valid_mac(mac_address):
         raise ValueError("Invalid MAC address")
 
     LOGGER.info("Blocking MAC: %s", mac_address)
 
-    # Xoa rule trung lap neu da ton tai roi them lai de dam bao trang thai.
+    # Remove duplicate rule if it already exists, then add it back for consistent state.
     _run_iptables(["-D", "FORWARD", "-m", "mac", "--mac-source", mac_address, "-j", "DROP"], allow_fail=True)
     _run_iptables(["-I", "FORWARD", "-m", "mac", "--mac-source", mac_address, "-j", "DROP"])
     _update_block_status(mac_address, True)
 
 def unblock_mac(mac_address):
-    """Xóa luật chặn trong Iptables và cập nhật Database"""
+    """Remove the block rule in iptables and update database state."""
     mac_address = str(mac_address).strip().lower()
     if not is_valid_mac(mac_address):
         raise ValueError("Invalid MAC address")
@@ -65,12 +64,11 @@ def unblock_mac(mac_address):
     _update_block_status(mac_address, False)
 
 def restore_firewall_rules():
-    """Hàm chạy 1 lần lúc bật Router để khôi phục luật chặn bị mất do cúp điện"""
+    """Run once on startup to restore firewall rules from persisted blocked devices."""
     LOGGER.info("Restoring firewall rules from database")
     conn = database.get_db_connection()
     cursor = conn.cursor()
     
-    # Tìm tất cả các máy đang có án phạt (IsBlocked = 1)
     cursor.execute("SELECT MacAddress FROM Devices WHERE IsBlocked = 1")
     blocked_devices = cursor.fetchall()
     conn.close()

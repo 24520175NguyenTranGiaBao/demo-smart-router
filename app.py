@@ -20,7 +20,6 @@ def create_app():
 
     @app.route("/", methods=["GET"])
     def index():
-        """Render trang chủ Frontend (Dashboard)"""
         return render_template("index.html")
         
     @app.route("/api/health", methods=["GET"])
@@ -29,7 +28,6 @@ def create_app():
 
     @app.route("/api/devices", methods=["GET"])
     def get_devices():
-        """API kết nối Frontend với Scanner"""
         device_list = scanner.scan_and_update_devices()
         return jsonify({"status": "success", "data": device_list})
 
@@ -39,12 +37,12 @@ def create_app():
         mac_to_block = str(data.get("mac", "")).strip().lower()
 
         if not mac_to_block:
-            return jsonify({"status": "error", "message": "Thiếu địa chỉ MAC"}), 400
+            return jsonify({"status": "error", "message": "Missing MAC address"}), 400
         if not firewall.is_valid_mac(mac_to_block):
-            return jsonify({"status": "error", "message": "Địa chỉ MAC không hợp lệ"}), 400
+            return jsonify({"status": "error", "message": "Invalid MAC address"}), 400
 
         firewall.block_mac(mac_to_block)
-        return jsonify({"status": "success", "message": f"Đã khóa MAC {mac_to_block}"})
+        return jsonify({"status": "success", "message": f"Blocked MAC {mac_to_block}"})
 
     @app.route("/api/unblock", methods=["POST"])
     def unblock_device():
@@ -52,20 +50,20 @@ def create_app():
         mac_to_unblock = str(data.get("mac", "")).strip().lower()
 
         if not mac_to_unblock:
-            return jsonify({"status": "error", "message": "Thiếu địa chỉ MAC"}), 400
+            return jsonify({"status": "error", "message": "Missing MAC address"}), 400
         if not firewall.is_valid_mac(mac_to_unblock):
-            return jsonify({"status": "error", "message": "Địa chỉ MAC không hợp lệ"}), 400
+            return jsonify({"status": "error", "message": "Invalid MAC address"}), 400
 
         firewall.unblock_mac(mac_to_unblock)
-        return jsonify({"status": "success", "message": f"Đã mở khóa {mac_to_unblock}"})
+        return jsonify({"status": "success", "message": f"Unblocked {mac_to_unblock}"})
 
     @app.errorhandler(404)
     def not_found(_):
-        return jsonify({"status": "error", "message": "Endpoint không tồn tại"}), 404
+        return jsonify({"status": "error", "message": "Endpoint not found"}), 404
 
     @app.errorhandler(500)
     def internal_error(_):
-        return jsonify({"status": "error", "message": "Lỗi nội bộ server"}), 500
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
 
     return app
 
