@@ -14,13 +14,18 @@
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
         <div class="container">
             <a class="navbar-brand" href="#">
-                <i class="fas fa-network-wired me-2"></i>Smart Router SDN
+                <i class="fas fa-network-wired me-2"></i>Smart Router
             </a>
             <button id="refresh-devices-btn" type="button" class="btn btn-outline-info btn-sm">
                 <i class="fas fa-sync-alt me-1"></i> Refresh Data
             </button>
+            <button type="button" class="btn btn-outline-warning btn-sm ms-2" data-bs-toggle="modal" data-bs-target="#customRuleModal">
+                <i class="fas fa-shield-alt me-1"></i> Custom Rule
+            </button>
         </div>
     </nav>
+    
+    
 
     <div class="container">
         <div class="row mb-3">
@@ -61,5 +66,75 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+    <div class="modal fade" id="customRuleModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header bg-dark text-white">
+                <h5 class="modal-title"><i class="fas fa-shield-alt me-2"></i>Custom iptables Rule</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="customRuleForm">
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <label class="form-label text-muted small">Action & Chain</label>
+                            <select class="form-select" id="ruleAction">
+                                <option value="-I">Insert (-I FORWARD)</option>
+                                <option value="-A">Append (-A FORWARD)</option>
+                                <option value="-D">Delete (-D FORWARD)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label text-muted small">Protocol (-p)</label>
+                            <select class="form-select" id="ruleProtocol">
+                                <option value="all">All</option>
+                                <option value="tcp">TCP</option>
+                                <option value="udp">UDP</option>
+                                <option value="icmp">ICMP</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label text-muted small">Target (-j)</label>
+                            <select class="form-select" id="ruleTarget">
+                                <option value="DROP" class="text-danger">DROP</option>
+                                <option value="REJECT" class="text-warning">REJECT</option>
+                                <option value="ACCEPT" class="text-success">ACCEPT</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label text-muted small">Source IP (-s)</label>
+                            <input type="text" class="form-control" id="ruleSrcIp" placeholder="e.g., 192.168.99.10 or ANY">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label text-muted small">Destination IP (-d)</label>
+                            <input type="text" class="form-control" id="ruleDstIp" placeholder="e.g., 8.8.8.8 or ANY">
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label class="form-label text-muted small">Source Port (--sport)</label>
+                            <input type="number" class="form-control" id="ruleSport" placeholder="Requires TCP/UDP">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label text-muted small">Dest Port (--dport)</label>
+                            <input type="number" class="form-control" id="ruleDport" placeholder="Requires TCP/UDP">
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer d-flex justify-content-between">
+                <small class="text-info"><i class="fas fa-info-circle"></i> Leave IP/Port blank to apply to ALL.</small>
+                <div>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="btnApplyCustomRule">Apply Rule</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 </body>
 </html>

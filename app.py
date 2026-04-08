@@ -6,6 +6,7 @@ from config import Config
 from core import database, firewall, scanner
 
 
+
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
@@ -65,6 +66,25 @@ def create_app():
     def internal_error(_):
         return jsonify({"status": "error", "message": "Internal server error"}), 500
 
+    @app.route('/api/custom_rule', methods=['POST'])
+    def api_custom_rule():
+        data = request.json
+        try:
+            # Extract data from JSON payload
+            firewall.apply_custom_rule(
+                action=data.get('action', '-I'),
+                chain=data.get('chain', 'FORWARD'),
+                protocol=data.get('protocol'),
+                src_ip=data.get('src_ip'),
+                dst_ip=data.get('dst_ip'),
+                sport=data.get('sport'),
+                dport=data.get('dport'),
+                target=data.get('target', 'DROP')
+            )
+            return jsonify({"status": "success", "message": "Firewall rule applied successfully!"})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+            
     return app
 
 
