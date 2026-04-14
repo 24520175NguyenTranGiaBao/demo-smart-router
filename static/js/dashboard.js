@@ -10,13 +10,21 @@
     const dom = {
         deviceList: null,
         refreshButton: null,
+        targetNodeSelect: null // Thêm biến hứng Dropdown chọn IP
     };
+
+    let trafficChart;
+    const maxDataPoints = 30; // Hiển thị 30 giây gần nhất
+    let labels = [];
+    let rxData = []; // Download
+    let txData = []; // Upload
 
     document.addEventListener("DOMContentLoaded", initializeDashboard);
 
     function initializeDashboard() {
         dom.deviceList = document.getElementById("device-list");
         dom.refreshButton = document.getElementById("refresh-devices-btn");
+        dom.targetNodeSelect = document.getElementById("targetNodeSelect"); // Mapping HTML
 
         if (!dom.deviceList) {
             console.error("Missing #device-list element");
@@ -29,26 +37,38 @@
 
         dom.deviceList.addEventListener("click", onDeviceActionClick);
 
-        loadDevices();
         const btnApplyCustomRule = document.getElementById("btnApplyCustomRule");
         if (btnApplyCustomRule) {
             btnApplyCustomRule.addEventListener("click", sendCustomRule);
         }
+
+        // Bắt sự kiện khi người dùng đổi IP theo dõi
+        if (dom.targetNodeSelect) {
+            dom.targetNodeSelect.addEventListener("change", () => {
+                // Xóa sạch biểu đồ cũ khi chuyển sang Node khác
+                labels.length = 0;
+                rxData.length = 0;
+                txData.length = 0;
+                if (trafficChart) trafficChart.update();
+            });
+        }
+
+        // Khởi tạo các thành phần
+        loadDevices();
+        initChart();
+        setInterval(updateChart, 1000); // Lặp vẽ biểu đồ mỗi 1s
     }
+
+    // --- CÁC HÀM QUẢN LÝ THIẾT BỊ ---
 
     function onDeviceActionClick(event) {
         const button = event.target.closest("button[data-action][data-mac]");
-
-        if (!button) {
-            return;
-        }
+        if (!button) return;
 
         const mac = button.getAttribute("data-mac");
         const action = button.getAttribute("data-action");
 
-        if (!mac || !action) {
-            return;
-        }
+        if (!mac || !action) return;
 
         toggleBlock(mac, action);
     }
@@ -68,7 +88,6 @@
 
     function setMessageState(message, isError = false) {
         const messageClass = isError ? "text-danger" : "text-muted";
-
         dom.deviceList.innerHTML = `
             <tr>
                 <td colspan="6" class="text-center py-4 ${messageClass}">${escapeHtml(message)}</td>
@@ -93,7 +112,10 @@
                 return;
             }
 
-            renderDeviceRows(Array.isArray(payload.data) ? payload.data : []);
+            const devices = Array.isArray(payload.data) ? payload.data : [];
+            renderDeviceRows(devices);
+            updateTargetDropdown(devices); // Đổ IP vào ô chọn biểu đồ
+
         } catch (error) {
             console.error("Failed to load devices:", error);
             setMessageState("Lost connection to API server!", true);
@@ -137,11 +159,9 @@
         if (isBlocked) {
             return '<span class="badge bg-danger"><i class="fas fa-lock me-1"></i>Blocked</span>';
         }
-
         if (isOnline) {
             return '<span class="badge bg-success"><i class="fas fa-globe me-1"></i>Online</span>';
         }
-
         return '<span class="badge bg-secondary"><i class="fas fa-moon me-1"></i>Offline</span>';
     }
 
@@ -152,20 +172,44 @@
         const buttonClass = isBlocked ? "btn-outline-success" : "btn-outline-danger";
 
         return `
-            <button
-                type="button"
-                class="btn btn-sm ${buttonClass}"
-                data-action="${action}"
-                data-mac="${escapeHtml(macAddress)}"
-            >
+            <button type="button" class="btn btn-sm ${buttonClass}" data-action="${action}" data-mac="${escapeHtml(macAddress)}">
                 <i class="fas ${icon} me-1"></i>${text}
             </button>
         `;
     }
 
+    // Hàm mới: Đổ IP thiết bị vào Dropdown
+    function updateTargetDropdown(devices) {
+        if (!dom.targetNodeSelect) return;
+        const currentSelection = dom.targetNodeSelect.value;
+        let optionsHtml = '<option value="">-- Chọn một thiết bị để soi --</option>';
+
+        devices.forEach(dev => {
+            if (dev.IpAddress) {
+                const name = dev.CustomName || dev.OriginalName || "Unknown";
+                optionsHtml += `<option value="${dev.IpAddress}">${name} (${dev.IpAddress})</option>`;
+            }
+        });
+
+        dom.targetNodeSelect.innerHTML = optionsHtml;
+
+        // Cố gắng giữ lại thiết bị đang soi nếu nó vẫn tồn tại
+        if (currentSelection && Array.from(dom.targetNodeSelect.options).some(opt => opt.value === currentSelection)) {
+            dom.targetNodeSelect.value = currentSelection;
+            return;
+        }
+
+        // Tự động chọn thiết bị đầu tiên để biểu đồ bắt đầu chạy ngay.
+        const firstValidOption = Array.from(dom.targetNodeSelect.options).find(opt => opt.value);
+        if (firstValidOption) {
+            dom.targetNodeSelect.value = firstValidOption.value;
+        }
+    }
+
+    // --- CÁC HÀM API KHÁC ---
+
     async function toggleBlock(mac, action) {
         const endpoint = action === "block" ? API_ENDPOINTS.block : API_ENDPOINTS.unblock;
-
         try {
             const response = await fetch(endpoint, {
                 method: "POST",
@@ -173,10 +217,7 @@
                 body: JSON.stringify({ mac }),
             });
 
-            if (!response.ok) {
-                throw new Error(`Request failed with status ${response.status}`);
-            }
-
+            if (!response.ok) throw new Error(`Request failed with status ${response.status}`);
             const payload = await response.json();
 
             if (payload.status !== "success") {
@@ -192,7 +233,6 @@
     }
 
     async function sendCustomRule() {
-        // Collect data from modal input fields
         const payload = {
             action: document.getElementById("ruleAction").value,
             chain: "FORWARD",
@@ -205,7 +245,6 @@
         };
 
         try {
-            // Send request to backend
             const response = await fetch("/api/custom_rule", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -216,7 +255,6 @@
             
             if (result.status === "success") {
                 alert(result.message);
-                // Automatically close modal on success
                 const modalEl = document.getElementById("customRuleModal");
                 const modalInstance = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
                 modalInstance.hide();
@@ -229,11 +267,7 @@
         }
     }
 
-    let trafficChart;
-    const maxDataPoints = 30; // Hiển thị 30 giây gần nhất
-    let labels = [];
-    let rxData = []; // Download
-    let txData = []; // Upload
+    // --- CHART & DASHBOARD LOGIC ---
 
     function initChart() {
         const ctx = document.getElementById('trafficChart').getContext('2d');
@@ -251,7 +285,7 @@
                         tension: 0.4
                     },
                     {
-                        label: 'Router Download (TX KB/s)',
+                        label: 'Client Download (TX KB/s)', // Đã đổi nhãn cho dễ hiểu
                         data: txData,
                         borderColor: '#2ecc71', // Màu xanh an toàn
                         backgroundColor: 'rgba(46, 204, 113, 0.2)',
@@ -262,27 +296,36 @@
             },
             options: { 
                 responsive: true,
-                animation: false, // Tắt animation để realtime mượt hơn
+                animation: false, 
                 scales: { y: { beginAtZero: true } }
             }
         });
     }
 
     async function updateChart() {
+        if (!dom.targetNodeSelect) return;
+        const selectedIp = dom.targetNodeSelect.value;
+
+        // NẾU CHƯA CHỌN IP NÀO, KHÔNG LÀM GÌ CẢ
+        if (!selectedIp) return;
+
         try {
-            const res = await fetch('/api/stats');
+            // Nối IP vào đường dẫn để gọi API đo cục bộ
+            const encodedIp = encodeURIComponent(selectedIp);
+            const res = await fetch(`/api/stats?ip=${encodedIp}`);
             const json = await res.json();
             
             if (json.status === 'success') {
-                if (labels.length > maxDataPoints) {
+                if (labels.length >= maxDataPoints) { // Đã sửa lỗi off-by-one
                     labels.shift();
                     rxData.shift();
                     txData.shift();
                 }
                 
                 labels.push(json.timestamp);
-                rxData.push(json.rx_speed);
-                txData.push(json.tx_speed);
+                // Bắt đúng tên biến từ API Backend mới
+                rxData.push(json.client_upload_kbps);
+                txData.push(json.client_download_kbps);
                 
                 trafficChart.update();
             }
@@ -290,12 +333,6 @@
             console.error("Lỗi lấy dữ liệu mạng", error);
         }
     }
-
-    // Chạy khởi tạo và lặp mỗi 1 giây
-    document.addEventListener("DOMContentLoaded", () => {
-        initChart();
-        setInterval(updateChart, 1000); // 1000ms = 1s
-    });
 
     function escapeHtml(value) {
         return String(value)
