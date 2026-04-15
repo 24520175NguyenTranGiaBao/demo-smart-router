@@ -2,38 +2,44 @@
     "use strict";
 
     const API_ENDPOINTS = {
-        devices: "/api/devices",
         block: "/api/block",
         unblock: "/api/unblock",
     };
 
     const dom = {
         deviceList: null,
-        refreshButton: null,
-        targetNodeSelect: null // Thêm biến hứng Dropdown chọn IP
+        targetNodeSelect: null
     };
 
     let trafficChart;
-    const maxDataPoints = 30; // Hiển thị 30 giây gần nhất
+    const maxDataPoints = 30; 
     let labels = [];
-    let rxData = []; // Download
-    let txData = []; // Upload
+    let rxData = []; 
+    let txData = []; 
 
+    // ==========================================
+    // 1. KHỞI TẠO KẾT NỐI FIREBASE
+    // ==========================================
+    const firebaseConfig = {
+        // Link này lấy đúng từ code Python của bạn
+        databaseURL: "https://nhom12-router-default-rtdb.firebaseio.com/"
+    };
+    // Khởi động bộ máy Firebase trên trình duyệt
+    if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+    }
+    const db = firebase.database();
+
+    // ==========================================
+    // 2. KHỞI CHẠY GIAO DIỆN
+    // ==========================================
     document.addEventListener("DOMContentLoaded", initializeDashboard);
 
     function initializeDashboard() {
         dom.deviceList = document.getElementById("device-list");
-        dom.refreshButton = document.getElementById("refresh-devices-btn");
-        dom.targetNodeSelect = document.getElementById("targetNodeSelect"); // Mapping HTML
+        dom.targetNodeSelect = document.getElementById("targetNodeSelect");
 
-        if (!dom.deviceList) {
-            console.error("Missing #device-list element");
-            return;
-        }
-
-        if (dom.refreshButton) {
-            dom.refreshButton.addEventListener("click", loadDevices);
-        }
+        if (!dom.deviceList) return;
 
         dom.deviceList.addEventListener("click", onDeviceActionClick);
 
@@ -42,10 +48,8 @@
             btnApplyCustomRule.addEventListener("click", sendCustomRule);
         }
 
-        // Bắt sự kiện khi người dùng đổi IP theo dõi
         if (dom.targetNodeSelect) {
             dom.targetNodeSelect.addEventListener("change", () => {
-                // Xóa sạch biểu đồ cũ khi chuyển sang Node khác
                 labels.length = 0;
                 rxData.length = 0;
                 txData.length = 0;
@@ -53,14 +57,42 @@
             });
         }
 
-        // Khởi tạo các thành phần
-        loadDevices();
+        // BẮT ĐẦU LẮNG NGHE ĐIỆN TOÁN ĐÁM MÂY
+        startFirebaseListener();
+        
+        // Khởi tạo biểu đồ băng thông
         initChart();
-        setInterval(updateChart, 1000); // Lặp vẽ biểu đồ mỗi 1s
+        setInterval(updateChart, 1000); 
     }
 
-    // --- CÁC HÀM QUẢN LÝ THIẾT BỊ ---
+    // ==========================================
+    // 3. LOGIC REALTIME FIREBASE (TRÁI TIM MỚI)
+    // ==========================================
+    function startFirebaseListener() {
+        setLoadingState();
+        
+        // Trỏ đúng vào cái nhánh mà Python đang đẩy lên
+        const devicesRef = db.ref('router_status/connected_devices');
+        
+        // Lệnh .on('value') cực kỳ ảo diệu: Mỗi khi trên mây có ai đó thêm bớt IP, hàm này tự chạy lại
+        devicesRef.on('value', (snapshot) => {
+            const data = snapshot.val();
+            
+            // Ép kiểu dữ liệu Firebase trả về thành mảng (Array) để render
+            const devices = Array.isArray(data) ? data : (data ? Object.values(data) : []);
+            
+            // Vẽ lại bảng và Dropdown ngay lập tức
+            renderDeviceRows(devices);
+            updateTargetDropdown(devices);
+        }, (error) => {
+            console.error("Lỗi đọc Firebase: ", error);
+            setMessageState("Không thể kết nối Realtime Database!", true);
+        });
+    }
 
+    // ==========================================
+    // 4. VẼ GIAO DIỆN (HTML RENDERING)
+    // ==========================================
     function onDeviceActionClick(event) {
         const button = event.target.closest("button[data-action][data-mac]");
         if (!button) return;
@@ -69,7 +101,6 @@
         const action = button.getAttribute("data-action");
 
         if (!mac || !action) return;
-
         toggleBlock(mac, action);
     }
 
@@ -77,10 +108,8 @@
         dom.deviceList.innerHTML = `
             <tr>
                 <td colspan="6" class="text-center py-4">
-                    <div class="spinner-border text-primary" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                    </div>
-                    <p class="mt-2 text-muted">Refreshing data...</p>
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <p class="mt-2 text-muted">Đang kết nối đám mây Firebase...</p>
                 </td>
             </tr>
         `;
@@ -88,53 +117,20 @@
 
     function setMessageState(message, isError = false) {
         const messageClass = isError ? "text-danger" : "text-muted";
-        dom.deviceList.innerHTML = `
-            <tr>
-                <td colspan="6" class="text-center py-4 ${messageClass}">${escapeHtml(message)}</td>
-            </tr>
-        `;
-    }
-
-    async function loadDevices() {
-        setLoadingState();
-
-        try {
-            const response = await fetch(API_ENDPOINTS.devices);
-
-            if (!response.ok) {
-                throw new Error(`Request failed with status ${response.status}`);
-            }
-
-            const payload = await response.json();
-
-            if (payload.status !== "success") {
-                setMessageState(`Server error: ${payload.message || "Unknown error"}`, true);
-                return;
-            }
-
-            const devices = Array.isArray(payload.data) ? payload.data : [];
-            renderDeviceRows(devices);
-            updateTargetDropdown(devices); // Đổ IP vào ô chọn biểu đồ
-
-        } catch (error) {
-            console.error("Failed to load devices:", error);
-            setMessageState("Lost connection to API server!", true);
-        }
+        dom.deviceList.innerHTML = `<tr><td colspan="6" class="text-center py-4 ${messageClass}">${escapeHtml(message)}</td></tr>`;
     }
 
     function renderDeviceRows(devices) {
         if (!devices.length) {
-            setMessageState("No devices found on the network.");
+            setMessageState("Không tìm thấy thiết bị nào trong mạng.");
             return;
         }
-
         const rows = devices.map((device) => createDeviceRowMarkup(device)).join("");
         dom.deviceList.innerHTML = rows;
     }
 
     function createDeviceRowMarkup(device) {
         const isBlocked = Number(device.IsBlocked) === 1;
-
         const displayName = escapeHtml(device.CustomName || device.OriginalName || "Unknown");
         const ipAddress = escapeHtml(device.IpAddress || "-");
         const macAddress = escapeHtml(device.MacAddress || "-");
@@ -156,12 +152,8 @@
     }
 
     function createStatusBadgeMarkup(isBlocked, isOnline) {
-        if (isBlocked) {
-            return '<span class="badge bg-danger"><i class="fas fa-lock me-1"></i>Blocked</span>';
-        }
-        if (isOnline) {
-            return '<span class="badge bg-success"><i class="fas fa-globe me-1"></i>Online</span>';
-        }
+        if (isBlocked) return '<span class="badge bg-danger"><i class="fas fa-lock me-1"></i>Blocked</span>';
+        if (isOnline) return '<span class="badge bg-success"><i class="fas fa-globe me-1"></i>Online</span>';
         return '<span class="badge bg-secondary"><i class="fas fa-moon me-1"></i>Offline</span>';
     }
 
@@ -170,19 +162,13 @@
         const icon = isBlocked ? "fa-unlock" : "fa-ban";
         const text = isBlocked ? "Unblock" : "Block MAC";
         const buttonClass = isBlocked ? "btn-outline-success" : "btn-outline-danger";
-
-        return `
-            <button type="button" class="btn btn-sm ${buttonClass}" data-action="${action}" data-mac="${escapeHtml(macAddress)}">
-                <i class="fas ${icon} me-1"></i>${text}
-            </button>
-        `;
+        return `<button type="button" class="btn btn-sm ${buttonClass}" data-action="${action}" data-mac="${escapeHtml(macAddress)}"><i class="fas ${icon} me-1"></i>${text}</button>`;
     }
 
-    // Hàm mới: Đổ IP thiết bị vào Dropdown
     function updateTargetDropdown(devices) {
         if (!dom.targetNodeSelect) return;
         const currentSelection = dom.targetNodeSelect.value;
-        let optionsHtml = '<option value="">-- Chọn một thiết bị để soi --</option>';
+        let optionsHtml = '<option value="">-- Chọn thiết bị để theo dõi biểu đồ --</option>';
 
         devices.forEach(dev => {
             if (dev.IpAddress) {
@@ -193,21 +179,18 @@
 
         dom.targetNodeSelect.innerHTML = optionsHtml;
 
-        // Cố gắng giữ lại thiết bị đang soi nếu nó vẫn tồn tại
         if (currentSelection && Array.from(dom.targetNodeSelect.options).some(opt => opt.value === currentSelection)) {
             dom.targetNodeSelect.value = currentSelection;
             return;
         }
 
-        // Tự động chọn thiết bị đầu tiên để biểu đồ bắt đầu chạy ngay.
         const firstValidOption = Array.from(dom.targetNodeSelect.options).find(opt => opt.value);
-        if (firstValidOption) {
-            dom.targetNodeSelect.value = firstValidOption.value;
-        }
+        if (firstValidOption) dom.targetNodeSelect.value = firstValidOption.value;
     }
 
-    // --- CÁC HÀM API KHÁC ---
-
+    // ==========================================
+    // 5. GỬI LỆNH XUỐNG BỘ ĐỊNH TUYẾN (ROUTER PI)
+    // ==========================================
     async function toggleBlock(mac, action) {
         const endpoint = action === "block" ? API_ENDPOINTS.block : API_ENDPOINTS.unblock;
         try {
@@ -216,19 +199,13 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ mac }),
             });
-
-            if (!response.ok) throw new Error(`Request failed with status ${response.status}`);
+            if (!response.ok) throw new Error(`Lỗi server: ${response.status}`);
             const payload = await response.json();
-
-            if (payload.status !== "success") {
-                alert(`Error: ${payload.message || "Unknown error"}`);
-                return;
-            }
-
-            await loadDevices();
+            if (payload.status !== "success") alert(`Lỗi: ${payload.message}`);
+            // Đã bỏ dòng loadDevices() ở đây vì Firebase sẽ tự cập nhật khi Pi thay đổi trạng thái
         } catch (error) {
-            console.error("Failed to update firewall rule:", error);
-            alert("Cannot connect to the iptables command server!");
+            console.error("Lỗi Firewall:", error);
+            alert("Lỗi kết nối tới Router!");
         }
     }
 
@@ -250,25 +227,26 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload)
             });
-            
             const result = await response.json();
-            
             if (result.status === "success") {
                 alert(result.message);
-                const modalEl = document.getElementById("customRuleModal");
-                const modalInstance = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
-                modalInstance.hide();
+                // Cách mới: Giả lập cú click chuột vào nút Đóng của chính cái Modal đó
+                const closeBtn = document.querySelector('#customRuleModal [data-bs-dismiss="modal"]');
+                if (closeBtn) closeBtn.click();
+                
+                // Dọn dẹp form để lần sau mở lên là form trống
+                document.getElementById("customRuleForm").reset();
             } else {
-                alert("Error: " + result.message);
+                alert("Lỗi: " + result.message);
             }
         } catch (error) {
-            console.error("Error while sending custom rule:", error);
-            alert("Cannot connect to server!");
+            alert("Lỗi kết nối tới Router!");
         }
     }
 
-    // --- CHART & DASHBOARD LOGIC ---
-
+    // ==========================================
+    // 6. BIỂU ĐỒ BĂNG THÔNG REALTIME
+    // ==========================================
     function initChart() {
         const ctx = document.getElementById('trafficChart').getContext('2d');
         trafficChart = new Chart(ctx, {
@@ -276,70 +254,39 @@
             data: {
                 labels: labels,
                 datasets: [
-                    {
-                        label: 'Client Upload (RX KB/s)',
-                        data: rxData,
-                        borderColor: '#e74c3c', // Màu đỏ cảnh báo
-                        backgroundColor: 'rgba(231, 76, 60, 0.2)',
-                        fill: true,
-                        tension: 0.4
-                    },
-                    {
-                        label: 'Client Download (TX KB/s)', // Đã đổi nhãn cho dễ hiểu
-                        data: txData,
-                        borderColor: '#2ecc71', // Màu xanh an toàn
-                        backgroundColor: 'rgba(46, 204, 113, 0.2)',
-                        fill: true,
-                        tension: 0.4
-                    }
+                    { label: 'Upload (RX KB/s)', data: rxData, borderColor: '#e74c3c', backgroundColor: 'rgba(231, 76, 60, 0.2)', fill: true, tension: 0.4 },
+                    { label: 'Download (TX KB/s)', data: txData, borderColor: '#2ecc71', backgroundColor: 'rgba(46, 204, 113, 0.2)', fill: true, tension: 0.4 }
                 ]
             },
-            options: { 
-                responsive: true,
-                animation: false, 
-                scales: { y: { beginAtZero: true } }
-            }
+            options: { responsive: true, animation: false, scales: { y: { beginAtZero: true } } }
         });
     }
 
     async function updateChart() {
         if (!dom.targetNodeSelect) return;
         const selectedIp = dom.targetNodeSelect.value;
-
-        // NẾU CHƯA CHỌN IP NÀO, KHÔNG LÀM GÌ CẢ
         if (!selectedIp) return;
 
         try {
-            // Nối IP vào đường dẫn để gọi API đo cục bộ
-            const encodedIp = encodeURIComponent(selectedIp);
-            const res = await fetch(`/api/stats?ip=${encodedIp}`);
+            // Biểu đồ vẫn lấy dữ liệu trực tiếp từ Pi để đảm bảo tốc độ cao nhất (1 giây/lần)
+            const res = await fetch(`/api/stats?ip=${encodeURIComponent(selectedIp)}`);
             const json = await res.json();
             
             if (json.status === 'success') {
-                if (labels.length >= maxDataPoints) { // Đã sửa lỗi off-by-one
-                    labels.shift();
-                    rxData.shift();
-                    txData.shift();
+                if (labels.length >= maxDataPoints) { 
+                    labels.shift(); rxData.shift(); txData.shift(); 
                 }
-                
                 labels.push(json.timestamp);
-                // Bắt đúng tên biến từ API Backend mới
                 rxData.push(json.client_upload_kbps);
                 txData.push(json.client_download_kbps);
-                
                 trafficChart.update();
             }
         } catch (error) {
-            console.error("Lỗi lấy dữ liệu mạng", error);
+            console.error("Lỗi đồ thị:", error);
         }
     }
 
     function escapeHtml(value) {
-        return String(value)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/\"/g, "&quot;")
-            .replace(/'/g, "&#39;");
+        return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#39;");
     }
 })();
