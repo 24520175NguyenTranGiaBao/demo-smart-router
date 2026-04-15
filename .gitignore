@@ -15,4 +15,4 @@ router_data.db
 # IDE
 .vscode/
 
-firebase-key.jsonfirebase-key.json
+firebase-key.json
