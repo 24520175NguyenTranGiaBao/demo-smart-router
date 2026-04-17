@@ -97,11 +97,13 @@
         const button = event.target.closest("button[data-action][data-mac]");
         if (!button) return;
 
+        if (button.disabled) return;
+
         const mac = button.getAttribute("data-mac");
         const action = button.getAttribute("data-action");
 
         if (!mac || !action) return;
-        toggleBlock(mac, action);
+        toggleBlock(button, mac, action);
     }
 
     function setLoadingState() {
@@ -191,8 +193,12 @@
     // ==========================================
     // 5. GỬI LỆNH XUỐNG BỘ ĐỊNH TUYẾN (ROUTER PI)
     // ==========================================
-    async function toggleBlock(mac, action) {
+    async function toggleBlock(button, mac, action) {
         const endpoint = action === "block" ? API_ENDPOINTS.block : API_ENDPOINTS.unblock;
+        const originalHtml = button.innerHTML;
+
+        setActionButtonLoading(button, action);
+
         try {
             const response = await fetch(endpoint, {
                 method: "POST",
@@ -201,12 +207,54 @@
             });
             if (!response.ok) throw new Error(`Lỗi server: ${response.status}`);
             const payload = await response.json();
-            if (payload.status !== "success") alert(`Lỗi: ${payload.message}`);
-            // Đã bỏ dòng loadDevices() ở đây vì Firebase sẽ tự cập nhật khi Pi thay đổi trạng thái
+            if (payload.status !== "success") throw new Error(payload.message || "Không thể cập nhật trạng thái");
+
+            applyImmediateActionState(button, action === "block");
         } catch (error) {
             console.error("Lỗi Firewall:", error);
-            alert("Lỗi kết nối tới Router!");
+            button.innerHTML = originalHtml;
+            alert(error.message || "Lỗi kết nối tới Router!");
+        } finally {
+            clearActionButtonLoading(button);
         }
+    }
+
+    function setActionButtonLoading(button, action) {
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+        const loadingLabel = action === "block" ? "Blocking..." : "Unblocking...";
+        button.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>${loadingLabel}`;
+    }
+
+    function clearActionButtonLoading(button) {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+    }
+
+    function applyImmediateActionState(button, isBlockedNow) {
+        const nextAction = isBlockedNow ? "unblock" : "block";
+        const nextIcon = isBlockedNow ? "fa-unlock" : "fa-ban";
+        const nextText = isBlockedNow ? "Unblock" : "Block MAC";
+        const nextClass = isBlockedNow ? "btn-outline-success" : "btn-outline-danger";
+
+        button.setAttribute("data-action", nextAction);
+        button.classList.remove("btn-outline-success", "btn-outline-danger");
+        button.classList.add(nextClass);
+        button.innerHTML = `<i class="fas ${nextIcon} me-1"></i>${nextText}`;
+
+        const row = button.closest("tr");
+        if (!row) return;
+
+        const statusCell = row.querySelector("td:nth-child(4)");
+        if (!statusCell) return;
+
+        if (isBlockedNow) {
+            statusCell.innerHTML = createStatusBadgeMarkup(true, true);
+            return;
+        }
+
+        // Unblock needs fresh online state from Firebase; show temporary state to avoid stale "Blocked".
+        statusCell.innerHTML = '<span class="badge bg-warning text-dark"><i class="fas fa-spinner fa-spin me-1"></i>Updating...</span>';
     }
 
     async function sendCustomRule() {

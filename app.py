@@ -30,6 +30,9 @@ print("[*] Đã kết nối thành công tới Firebase Cloud!")
 # ==========================================
 node_stats = {} 
 last_net_stats = {"rx": 0, "tx": 0, "time": time.time()}
+SYNC_INTERVAL_SECONDS = 5
+SYNC_ERROR_RETRY_SECONDS = 3
+sync_now_event = threading.Event()
 
 # ==========================================
 # 3. CÁC HÀM XỬ LÝ FIREBASE NGẦM
@@ -44,13 +47,17 @@ def sync_devices_to_firebase(devices_list):
 def background_sync():
     print("[*] Luồng đồng bộ ngầm Firebase đã bắt đầu...")
     while True:
+        wait_timeout = SYNC_INTERVAL_SECONDS
         try:
             device_list = scanner.scan_and_update_devices()
             sync_devices_to_firebase(device_list)
-            time.sleep(5)
         except Exception as e:
             print(f"[!] Lỗi trong luồng đồng bộ ngầm: {e}")
-            time.sleep(10)
+            wait_timeout = SYNC_ERROR_RETRY_SECONDS
+
+        # Wait for either next interval or a forced sync signal from state-changing APIs.
+        sync_now_event.wait(timeout=wait_timeout)
+        sync_now_event.clear()
 
 # ==========================================
 # 4. KHỞI TẠO ỨNG DỤNG FLASK
@@ -121,10 +128,9 @@ def create_app():
     def health_check():
         return jsonify({"status": "success", "message": "Smart router backend is healthy"})
 
-    @app.route("/api/devices", methods=["GET"])
-    def get_devices():
-        device_list = scanner.scan_and_update_devices()
-        return jsonify({"status": "success", "data": device_list})
+    def request_immediate_firebase_sync():
+        """Ask the background worker to run an immediate full scan + sync."""
+        sync_now_event.set()
 
     @app.route("/api/block", methods=["POST"])
     def block_device():
@@ -133,6 +139,7 @@ def create_app():
         if not mac_to_block or not firewall.is_valid_mac(mac_to_block):
             return jsonify({"status": "error", "message": "Invalid MAC address"}), 400
         firewall.block_mac(mac_to_block)
+        request_immediate_firebase_sync()
         return jsonify({"status": "success", "message": f"Blocked MAC {mac_to_block}"})
 
     @app.route("/api/unblock", methods=["POST"])
@@ -142,6 +149,7 @@ def create_app():
         if not mac_to_unblock or not firewall.is_valid_mac(mac_to_unblock):
             return jsonify({"status": "error", "message": "Invalid MAC address"}), 400
         firewall.unblock_mac(mac_to_unblock)
+        request_immediate_firebase_sync()
         return jsonify({"status": "success", "message": f"Unblocked {mac_to_unblock}"})
 
     @app.route('/api/custom_rule', methods=['POST'])

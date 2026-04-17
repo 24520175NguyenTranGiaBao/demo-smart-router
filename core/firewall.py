@@ -19,18 +19,20 @@ def _iptables_binary():
 
 
 def _run_iptables(args, allow_fail=False):
-    try:
-        result = subprocess.run(
-            [_iptables_binary(), *args],
-            check=not allow_fail,
-            capture_output=True,
-            text=True,
-        )
-        if result.stderr:
-            LOGGER.debug("iptables stderr: %s", result.stderr.strip())
-    except subprocess.CalledProcessError as exc:
+    result = subprocess.run(
+        [_iptables_binary(), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.stderr:
+        LOGGER.debug("iptables stderr: %s", result.stderr.strip())
+
+    if result.returncode != 0 and not allow_fail:
         LOGGER.error("iptables command failed: %s", " ".join(args))
-        raise RuntimeError(exc.stderr.strip() or "iptables execution failed") from exc
+        raise RuntimeError(result.stderr.strip() or "iptables execution failed")
+
+    return result
 
 
 def _update_block_status(mac_address, is_blocked):
@@ -87,7 +89,7 @@ def restore_firewall_rules():
 IP_PATTERN = re.compile(r"^(\d{1,3}\.){3}\d{1,3}(/\d{1,2})?$")
 VALID_ACTIONS = ["-I", "-A", "-D"]
 VALID_CHAINS = ["INPUT", "OUTPUT", "FORWARD"]
-VALID_PROTOCOLS = ["tcp", "udp", "icmp", "all"]
+VALID_PROTOCOLS = ["tcp", "udp", "icmp", "all", "tcp_udp"]
 VALID_TARGETS = ["DROP", "ACCEPT", "REJECT"]
 
 
@@ -122,8 +124,10 @@ def apply_custom_rule(action="-I", chain="FORWARD", protocol=None, src_ip=None, 
     if chain not in VALID_CHAINS:
         raise ValueError(f"Invalid chain: {chain}. Must be one of {VALID_CHAINS}")
     
+    normalized_protocol = str(protocol or "all").strip().lower()
+
     # Validate protocol
-    if protocol and protocol.lower() not in VALID_PROTOCOLS:
+    if normalized_protocol not in VALID_PROTOCOLS:
         raise ValueError(f"Invalid protocol: {protocol}. Must be one of {VALID_PROTOCOLS}")
     
     # Validate target
@@ -142,30 +146,63 @@ def apply_custom_rule(action="-I", chain="FORWARD", protocol=None, src_ip=None, 
     if dport and not _is_valid_port(dport):
         raise ValueError(f"Invalid destination port: {dport}")
 
-    # Initialize base command: iptables -I FORWARD
-    args = [action, chain]
+    if (sport or dport) and normalized_protocol == "icmp":
+        raise ValueError("ICMP does not support --sport/--dport")
 
-    # If protocol is specified (tcp, udp, icmp)
-    if protocol and protocol.lower() != 'all':
-        args.extend(["-p", protocol.lower()])
-        
-        # Ports can only be used when protocol is tcp or udp
-        if protocol.lower() in ['tcp', 'udp']:
-            if sport: 
+    def _protocols_to_apply():
+        if normalized_protocol == "tcp_udp":
+            return ["tcp", "udp"]
+
+        # For HTTPS blocking by port, also cover QUIC over UDP/443 by default.
+        if (
+            normalized_protocol == "tcp"
+            and target == "DROP"
+            and dport
+            and int(dport) == 443
+        ):
+            return ["tcp", "udp"]
+
+        if normalized_protocol == "all":
+            if sport or dport:
+                return ["tcp", "udp"]
+            return [None]
+
+        return [normalized_protocol]
+
+    def _build_rule_args(proto):
+        args = [action, chain]
+
+        if proto:
+            args.extend(["-p", proto])
+
+        if proto in ["tcp", "udp"]:
+            if sport:
                 args.extend(["--sport", str(int(sport))])
-            if dport: 
+            if dport:
                 args.extend(["--dport", str(int(dport))])
 
-    # Source and destination
-    if src_ip:
-        args.extend(["-s", src_ip.strip()])
-    if dst_ip:
-        args.extend(["-d", dst_ip.strip()])
+        if src_ip:
+            args.extend(["-s", src_ip.strip()])
+        if dst_ip:
+            args.extend(["-d", dst_ip.strip()])
 
-    # Final action (DROP, ACCEPT, REJECT)
-    args.extend(["-j", target])
+        args.extend(["-j", target])
+        return args
 
-    LOGGER.info("Executing Custom Rule: iptables %s", " ".join(args))
-    
-    # Call the existing iptables executor helper
-    _run_iptables(args)
+    commands = [_build_rule_args(proto) for proto in _protocols_to_apply()]
+
+    if action == "-D" and len(commands) > 1:
+        deleted_any = False
+        for args in commands:
+            LOGGER.info("Executing Custom Rule: iptables %s", " ".join(args))
+            result = _run_iptables(args, allow_fail=True)
+            if result.returncode == 0:
+                deleted_any = True
+
+        if not deleted_any:
+            raise RuntimeError("No matching rule found to delete")
+        return
+
+    for args in commands:
+        LOGGER.info("Executing Custom Rule: iptables %s", " ".join(args))
+        _run_iptables(args)
