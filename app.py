@@ -30,7 +30,7 @@ print("[*] Đã kết nối thành công tới Firebase Cloud!")
 # ==========================================
 node_stats = {} 
 last_net_stats = {"rx": 0, "tx": 0, "time": time.time()}
-SYNC_INTERVAL_SECONDS = 5
+SYNC_INTERVAL_SECONDS = 3
 SYNC_ERROR_RETRY_SECONDS = 3
 sync_now_event = threading.Event()
 

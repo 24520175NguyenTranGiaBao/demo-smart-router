@@ -8,7 +8,9 @@ LEASE_FILE = "/var/lib/misc/dnsmasq.leases"
 ONLINE_ARP_STATES = {"REACHABLE", "DELAY", "PROBE", "STALE"}
 ARPING_TIMEOUT_SECONDS = 1
 HOSTAPD_TIMEOUT_SECONDS = 1
+PROBE_FAILURE_THRESHOLD = 2
 MAC_LINE_PATTERN = re.compile(r"^(?:STA\s+)?([0-9a-f]{2}(?::[0-9a-f]{2}){5})\\b", re.IGNORECASE)
+probe_failure_counts = {}
 
 def get_active_macs_from_arp():
     """Use ip neigh to identify MAC addresses currently reachable on the network."""
@@ -148,6 +150,7 @@ def scan_and_update_devices():
     wireless_interfaces = _get_wireless_interfaces()
     connected_macs = active_macs | associated_wifi_macs
     online_state_by_mac = {}
+    seen_macs = set()
     
     try:
         with open(LEASE_FILE, 'r') as f:
@@ -158,6 +161,7 @@ def scan_and_update_devices():
                     mac = parts[1].lower()
                     ip = parts[2]
                     hostname = parts[3]
+                    seen_macs.add(mac)
 
                     route_interface = _resolve_interface_for_ip(ip)
                     is_wireless_client = bool(route_interface and route_interface in wireless_interfaces)
@@ -168,17 +172,35 @@ def scan_and_update_devices():
                     else:
                         is_online = mac in connected_macs
 
-                    # For non-Wi-Fi candidates coming from ARP cache only, probe to avoid stale-online.
-                    if is_online and mac in active_macs and mac not in associated_wifi_macs and not is_wireless_client:
-                        # ARP cache can lag on disconnect; probe live to confirm online state.
+                    should_probe = is_online and (
+                        is_wireless_client
+                        or (mac in active_macs and mac not in associated_wifi_macs)
+                    )
+
+                    # Confirm disconnect quickly but avoid flicker from single probe loss.
+                    if should_probe:
                         probed_online = _arping_is_online(ip)
-                        if probed_online is not None:
-                            is_online = probed_online
+                        if probed_online is True:
+                            probe_failure_counts.pop(mac, None)
+                            is_online = True
+                        elif probed_online is False:
+                            failures = probe_failure_counts.get(mac, 0) + 1
+                            probe_failure_counts[mac] = failures
+                            if failures >= PROBE_FAILURE_THRESHOLD:
+                                is_online = False
+                        else:
+                            probe_failure_counts.pop(mac, None)
+                    else:
+                        probe_failure_counts.pop(mac, None)
 
                     online_state_by_mac[mac] = is_online
                     update_device_in_db(mac, ip, hostname, is_online)
     except FileNotFoundError:
         print("Leases file not found yet.")
+
+    stale_probe_macs = [mac for mac in probe_failure_counts if mac not in seen_macs]
+    for mac in stale_probe_macs:
+        probe_failure_counts.pop(mac, None)
         
     return get_all_devices_from_db(online_state_by_mac)
 
