@@ -15,54 +15,44 @@ import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import db
 
-# ==========================================
-# 1. KHỞI TẠO FIREBASE
-# ==========================================
 cred = credentials.Certificate("firebase-key.json")
 firebase_admin.initialize_app(cred, {
     'databaseURL': 'https://nhom12-router-default-rtdb.firebaseio.com/'
 })
 
-print("[*] Đã kết nối thành công tới Firebase Cloud!")
+print("[*] Connected to Firebase Cloud successfully!")
 
-# ==========================================
-# 2. BIẾN TOÀN CỤC LƯU TRỮ BĂNG THÔNG
-# ==========================================
 node_stats = {} 
 last_net_stats = {"rx": 0, "tx": 0, "time": time.time()}
 SYNC_INTERVAL_SECONDS = 3
 SYNC_ERROR_RETRY_SECONDS = 3
 sync_now_event = threading.Event()
 
-# ==========================================
-# 3. CÁC HÀM XỬ LÝ FIREBASE NGẦM
-# ==========================================
 def sync_devices_to_firebase(devices_list):
+    """Push the latest connected device list to Firebase."""
     try:
         ref = db.reference('router_status/connected_devices')
         ref.set(devices_list)
     except Exception as e:
-        print(f"[-] Lỗi đồng bộ Firebase: {e}")
+        print(f"[-] Firebase sync error: {e}")
 
 def background_sync():
-    print("[*] Luồng đồng bộ ngầm Firebase đã bắt đầu...")
+    """Run periodic background scans and sync results to Firebase."""
+    print("[*] Background Firebase sync thread started...")
     while True:
         wait_timeout = SYNC_INTERVAL_SECONDS
         try:
             device_list = scanner.scan_and_update_devices()
             sync_devices_to_firebase(device_list)
         except Exception as e:
-            print(f"[!] Lỗi trong luồng đồng bộ ngầm: {e}")
+            print(f"[!] Background sync thread error: {e}")
             wait_timeout = SYNC_ERROR_RETRY_SECONDS
 
-        # Wait for either next interval or a forced sync signal from state-changing APIs.
         sync_now_event.wait(timeout=wait_timeout)
         sync_now_event.clear()
 
-# ==========================================
-# 4. KHỞI TẠO ỨNG DỤNG FLASK
-# ==========================================
 def create_app():
+    """Create and configure the Flask application instance."""
     app = Flask(__name__)
     app.config.from_object(Config)
 
@@ -79,6 +69,7 @@ def create_app():
     )
 
     def _build_subprocess_env():
+        """Build a PATH-safe environment for subprocess calls."""
         env = os.environ.copy()
         base_paths = ["/usr/sbin", "/sbin", "/usr/bin", "/bin"]
         current_path = env.get("PATH", "")
@@ -86,6 +77,7 @@ def create_app():
         return env
 
     def _iptables_binary():
+        """Resolve an executable iptables binary path."""
         candidates = [
             os.getenv("IPTABLES_BIN"),
             shutil.which("iptables"),
@@ -98,6 +90,7 @@ def create_app():
         raise RuntimeError("Cannot find executable iptables binary.")
 
     def _run_iptables(args, check=True):
+        """Run iptables with wait flag and optional strict error handling."""
         binary = _iptables_binary()
         command = [binary, "-w", *args]
         result = subprocess.run(
@@ -109,6 +102,7 @@ def create_app():
         return result
 
     def _normalize_rule_address(address):
+        """Normalize IP/network strings for robust iptables row matching."""
         value = str(address).strip()
         try:
             if "/" in value:
@@ -122,10 +116,12 @@ def create_app():
 
     @app.route("/", methods=["GET"])
     def index():
+        """Render the dashboard page."""
         return render_template("index.html")
         
     @app.route("/api/health", methods=["GET"])
     def health_check():
+        """Expose a lightweight health-check endpoint."""
         return jsonify({"status": "success", "message": "Smart router backend is healthy"})
 
     def request_immediate_firebase_sync():
@@ -134,6 +130,7 @@ def create_app():
 
     @app.route("/api/block", methods=["POST"])
     def block_device():
+        """Block a device by MAC address and request immediate sync."""
         data = request.get_json(silent=True) or {}
         mac_to_block = str(data.get("mac", "")).strip().lower()
         if not mac_to_block or not firewall.is_valid_mac(mac_to_block):
@@ -144,6 +141,7 @@ def create_app():
 
     @app.route("/api/unblock", methods=["POST"])
     def unblock_device():
+        """Unblock a device by MAC address and request immediate sync."""
         data = request.get_json(silent=True) or {}
         mac_to_unblock = str(data.get("mac", "")).strip().lower()
         if not mac_to_unblock or not firewall.is_valid_mac(mac_to_unblock):
@@ -154,6 +152,7 @@ def create_app():
 
     @app.route('/api/custom_rule', methods=['POST'])
     def api_custom_rule():
+        """Apply a custom firewall rule provided by the client."""
         data = request.json
         try:
             firewall.apply_custom_rule(
@@ -171,6 +170,7 @@ def create_app():
             return jsonify({"status": "error", "message": str(e)}), 500
 
     def ensure_accounting_rules(ip):
+        """Ensure per-IP ACCEPT rules exist so byte counters can be tracked."""
         try:
             normalized_ip = str(ipaddress.ip_address(str(ip).strip()))
             for direction_flag, direction_label in (("-s", "upload"), ("-d", "download")):
@@ -184,6 +184,7 @@ def create_app():
 
     @app.route('/api/stats')
     def get_node_stats():
+        """Return realtime upload/download speed for the selected client IP."""
         global node_stats
         target_ip = str(request.args.get('ip', '')).strip()
 
@@ -242,10 +243,8 @@ app = create_app()
 
 if __name__ == "__main__":
     print("Smart router backend is running")
-    
-    # 5. KHỞI ĐỘNG LUỒNG CHẠY NGẦM ĐỒNG BỘ
+
     sync_thread = threading.Thread(target=background_sync, daemon=True)
     sync_thread.start()
-    
-    # 6. KHỞI ĐỘNG FLASK (Tắt Debug để không lỗi luồng ngầm)
+
     app.run(host=app.config["APP_HOST"], port=app.config["APP_PORT"], debug=False)

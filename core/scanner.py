@@ -13,14 +13,17 @@ MAC_LINE_PATTERN = re.compile(r"^(?:STA\s+)?([0-9a-f]{2}(?::[0-9a-f]{2}){5})\\b"
 probe_failure_counts = {}
 
 def get_active_macs_from_arp():
-    """Use ip neigh to identify MAC addresses currently reachable on the network."""
+    """Read ARP neighbor table and collect currently reachable MAC addresses.
+
+    Returns:
+        set[str]: MAC addresses with ARP states considered online.
+    """
     active_macs = set()
     try:
         result = subprocess.check_output(['ip', 'neigh'], text=True)
         
         for line in result.split('\n'):
             parts = line.split()
-            # Typical line format: 192.168.10.68 dev wlan0 lladdr c0:a5... REACHABLE
             if len(parts) >= 5 and 'lladdr' in line:
                 mac = parts[4].lower()
                 state = parts[-1].upper()
@@ -33,7 +36,11 @@ def get_active_macs_from_arp():
     return active_macs
 
 def _get_wireless_interfaces():
-    """Discover wireless interfaces that can be queried via hostapd_cli."""
+    """Discover wireless interfaces available on the host.
+
+    Returns:
+        set[str]: Interface names that support wireless operations.
+    """
     interfaces = set()
     try:
         result = subprocess.run(
@@ -94,7 +101,14 @@ def get_associated_wifi_macs():
     return associated_macs, has_hostapd_data
 
 def _resolve_interface_for_ip(ip):
-    """Resolve outgoing interface for an IP so arping probes the correct LAN adapter."""
+    """Resolve outgoing interface for an IP address.
+
+    Args:
+        ip: IPv4/IPv6 address string.
+
+    Returns:
+        str | None: Interface name if resolved, otherwise None.
+    """
     try:
         result = subprocess.run(
             ["ip", "route", "get", ip],
@@ -117,7 +131,14 @@ def _resolve_interface_for_ip(ip):
     return None
 
 def _arping_is_online(ip):
-    """Actively verify host presence to reduce delay when a device disconnects."""
+    """Probe host liveness with arping.
+
+    Args:
+        ip: Target IP address to probe.
+
+    Returns:
+        bool | None: True if online, False if unreachable, None if undetermined.
+    """
     try:
         ipaddress.ip_address(str(ip).strip())
     except ValueError:
@@ -144,7 +165,11 @@ def _arping_is_online(ip):
         return None
 
 def scan_and_update_devices():
-    """Update DB state and refresh LastSeen only for currently reachable devices."""
+    """Scan leases/network state, update DB records, and return device list.
+
+    Returns:
+        list[dict]: Device records enriched with calculated online state.
+    """
     active_macs = get_active_macs_from_arp()
     associated_wifi_macs, has_hostapd_data = get_associated_wifi_macs()
     wireless_interfaces = _get_wireless_interfaces()
@@ -167,7 +192,6 @@ def scan_and_update_devices():
                     is_wireless_client = bool(route_interface and route_interface in wireless_interfaces)
 
                     if is_wireless_client and has_hostapd_data:
-                        # AP association is the most reliable signal for Wi-Fi idle clients.
                         is_online = mac in associated_wifi_macs
                     else:
                         is_online = mac in connected_macs
@@ -177,7 +201,6 @@ def scan_and_update_devices():
                         or (mac in active_macs and mac not in associated_wifi_macs)
                     )
 
-                    # Confirm disconnect quickly but avoid flicker from single probe loss.
                     if should_probe:
                         probed_online = _arping_is_online(ip)
                         if probed_online is True:
@@ -205,6 +228,14 @@ def scan_and_update_devices():
     return get_all_devices_from_db(online_state_by_mac)
 
 def update_device_in_db(mac, ip, hostname, is_online):
+    """Insert or update one device row based on scan results.
+
+    Args:
+        mac: Device MAC address.
+        ip: Current device IP address.
+        hostname: Observed hostname from lease data.
+        is_online: Confirmed online state for this scan cycle.
+    """
     conn = database.get_db_connection()
     cursor = conn.cursor()
     
@@ -217,7 +248,6 @@ def update_device_in_db(mac, ip, hostname, is_online):
             VALUES (?, ?, ?, ?, 0)
         ''', (mac, ip, hostname, hostname))
     else:
-        # Update LastSeen only when device is currently confirmed online.
         if is_online:
             cursor.execute('''
                 UPDATE Devices 
@@ -225,7 +255,6 @@ def update_device_in_db(mac, ip, hostname, is_online):
                 WHERE MacAddress = ?
             ''', (ip, hostname, mac))
         else:
-            # Keep LastSeen unchanged for offline devices; only update mutable fields.
             cursor.execute('''
                 UPDATE Devices 
                 SET IpAddress = ?, OriginalName = ?
@@ -236,6 +265,14 @@ def update_device_in_db(mac, ip, hostname, is_online):
     conn.close()
 
 def get_all_devices_from_db(online_state_by_mac=None):
+    """Fetch all known devices and attach online status.
+
+    Args:
+        online_state_by_mac: Optional precomputed online-state map by MAC.
+
+    Returns:
+        list[dict]: Device rows sorted by most recent LastSeen.
+    """
     conn = database.get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM Devices ORDER BY LastSeen DESC")

@@ -11,14 +11,39 @@ MAC_PATTERN = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 
 
 def is_valid_mac(mac_address):
+    """Validate a MAC address against the expected lowercase hex format.
+
+    Args:
+        mac_address: Raw MAC address input from API, DB, or caller.
+
+    Returns:
+        bool: True when the MAC matches aa:bb:cc:dd:ee:ff format.
+    """
     return bool(MAC_PATTERN.match(str(mac_address).strip().lower()))
 
 
 def _iptables_binary():
+    """Resolve an iptables executable path.
+
+    Returns:
+        str: Absolute or discovered executable path for iptables.
+    """
     return shutil.which("iptables") or "/sbin/iptables"
 
 
 def _run_iptables(args, allow_fail=False):
+    """Execute an iptables command and optionally tolerate failures.
+
+    Args:
+        args: Positional iptables arguments without the binary path.
+        allow_fail: When True, non-zero exit codes are returned instead of raised.
+
+    Returns:
+        subprocess.CompletedProcess: Execution result with stdout/stderr.
+
+    Raises:
+        RuntimeError: If command fails and allow_fail is False.
+    """
     result = subprocess.run(
         [_iptables_binary(), *args],
         check=False,
@@ -36,6 +61,12 @@ def _run_iptables(args, allow_fail=False):
 
 
 def _update_block_status(mac_address, is_blocked):
+    """Persist block status for a MAC address in the Devices table.
+
+    Args:
+        mac_address: Target MAC address in canonical form.
+        is_blocked: Whether the device should be marked blocked.
+    """
     conn = database.get_db_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE Devices SET IsBlocked = ? WHERE MacAddress = ?", (1 if is_blocked else 0, mac_address))
@@ -43,13 +74,13 @@ def _update_block_status(mac_address, is_blocked):
     conn.close()
 
 def block_mac(mac_address):
+    """Add a DROP rule for a MAC address and persist blocked state."""
     mac_address = str(mac_address).strip().lower()
     if not is_valid_mac(mac_address):
         raise ValueError("Invalid MAC address")
 
     LOGGER.info("Blocking MAC: %s", mac_address)
 
-    # Remove duplicate rule if it already exists, then add it back for consistent state.
     _run_iptables(["-D", "FORWARD", "-m", "mac", "--mac-source", mac_address, "-j", "DROP"], allow_fail=True)
     _run_iptables(["-I", "FORWARD", "-m", "mac", "--mac-source", mac_address, "-j", "DROP"])
     _update_block_status(mac_address, True)
@@ -94,14 +125,28 @@ VALID_TARGETS = ["DROP", "ACCEPT", "REJECT"]
 
 
 def _is_valid_ip(ip):
-    """Validate IP address format (supports CIDR notation)."""
+    """Validate IPv4 input format with optional CIDR suffix.
+
+    Args:
+        ip: IP address string, optionally with subnet mask.
+
+    Returns:
+        bool: True when empty or matching expected pattern.
+    """
     if not ip:
         return True
     return bool(IP_PATTERN.match(str(ip).strip()))
 
 
 def _is_valid_port(port):
-    """Validate port number (1-65535)."""
+    """Validate transport-layer port range.
+
+    Args:
+        port: Candidate port value.
+
+    Returns:
+        bool: True when empty or within 1..65535.
+    """
     if not port:
         return True
     try:
@@ -112,35 +157,41 @@ def _is_valid_port(port):
 
 
 def apply_custom_rule(action="-I", chain="FORWARD", protocol=None, src_ip=None, dst_ip=None, sport=None, dport=None, target="DROP"):
+    """Build and execute custom iptables rules from API input.
+
+    Args:
+        action: iptables action flag (-I, -A, -D).
+        chain: Target chain to modify.
+        protocol: Protocol selector (tcp/udp/icmp/all/tcp_udp).
+        src_ip: Optional source IP or CIDR.
+        dst_ip: Optional destination IP or CIDR.
+        sport: Optional source port.
+        dport: Optional destination port.
+        target: iptables jump target (DROP/ACCEPT/REJECT).
+
+    Raises:
+        ValueError: If any input validation fails.
+        RuntimeError: If delete action cannot find a matching rule.
     """
-    Build a dynamic iptables command based on optional parameters.
-    Includes validation to prevent command injection.
-    """
-    # Validate action
     if action not in VALID_ACTIONS:
         raise ValueError(f"Invalid action: {action}. Must be one of {VALID_ACTIONS}")
-    
-    # Validate chain
+
     if chain not in VALID_CHAINS:
         raise ValueError(f"Invalid chain: {chain}. Must be one of {VALID_CHAINS}")
     
     normalized_protocol = str(protocol or "all").strip().lower()
 
-    # Validate protocol
     if normalized_protocol not in VALID_PROTOCOLS:
         raise ValueError(f"Invalid protocol: {protocol}. Must be one of {VALID_PROTOCOLS}")
-    
-    # Validate target
+
     if target not in VALID_TARGETS:
         raise ValueError(f"Invalid target: {target}. Must be one of {VALID_TARGETS}")
-    
-    # Validate IP addresses
+
     if src_ip and not _is_valid_ip(src_ip):
         raise ValueError(f"Invalid source IP: {src_ip}")
     if dst_ip and not _is_valid_ip(dst_ip):
         raise ValueError(f"Invalid destination IP: {dst_ip}")
-    
-    # Validate ports
+
     if sport and not _is_valid_port(sport):
         raise ValueError(f"Invalid source port: {sport}")
     if dport and not _is_valid_port(dport):
@@ -150,10 +201,14 @@ def apply_custom_rule(action="-I", chain="FORWARD", protocol=None, src_ip=None, 
         raise ValueError("ICMP does not support --sport/--dport")
 
     def _protocols_to_apply():
+        """Derive concrete protocol list from high-level protocol selection.
+
+        Returns:
+            list[str | None]: Protocols to materialize into one or more rules.
+        """
         if normalized_protocol == "tcp_udp":
             return ["tcp", "udp"]
 
-        # For HTTPS blocking by port, also cover QUIC over UDP/443 by default.
         if (
             normalized_protocol == "tcp"
             and target == "DROP"
@@ -170,6 +225,14 @@ def apply_custom_rule(action="-I", chain="FORWARD", protocol=None, src_ip=None, 
         return [normalized_protocol]
 
     def _build_rule_args(proto):
+        """Build one iptables argument list for a specific protocol variant.
+
+        Args:
+            proto: Protocol to include (tcp/udp/icmp/all mapped), or None.
+
+        Returns:
+            list[str]: Command arguments ready for _run_iptables.
+        """
         args = [action, chain]
 
         if proto:
